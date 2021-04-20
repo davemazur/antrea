@@ -79,9 +79,9 @@ k8s_build(){
     fi
     rm -rf $GOPATH/src/k8s.io/kubernetes
 
-    go get -d k8s.io/kubernetes
+    git clone https://github.com/kubernetes/kubernetes.git $WORKSPACE/src/k8s.io/kubernetes
 
-    pushd $GOPATH/src/k8s.io/kubernetes
+    pushd $WORKSPACE/src/k8s.io/kubernetes
     git checkout ${KUBERNETES_VERSION}
     git log -p -1 > $ARTIFACTS/kubernetes.txt
 
@@ -200,7 +200,7 @@ multus_install(){
     status=0
     build_github_project "multus-cni" "sudo docker build -t $MULTUS_CNI_HARBOR_IMAGE ."
 
-    change_k8s_resource "DaemonSet" "kube-multus-ds-amd64" "spec.template.spec.containers[0].image"\
+    change_k8s_resource "DaemonSet" "kube-multus-ds" "spec.template.spec.containers[0].image"\
         "$MULTUS_CNI_HARBOR_IMAGE" "$WORKSPACE/multus-cni/images/multus-daemonset.yml"
 }
 
@@ -220,7 +220,7 @@ multus_configuration() {
     d=$(date '+%s')
     while [ $d -lt $stop ]; do
        echo "Wait until multus is ready"
-       ready=$(kubectl -n kube-system get ds |grep kube-multus-ds-${arch}|awk '{print $4}')
+       ready=$(kubectl -n kube-system get ds |grep kube-multus-ds|awk '{print $4}')
        rc=$?
        kubectl -n kube-system get ds
        d=$(date '+%s')

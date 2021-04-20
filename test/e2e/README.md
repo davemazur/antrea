@@ -33,8 +33,8 @@ virtualbox`.
 
 You can install all the dependencies with [brew](https://brew.sh/):
 
-* `brew cask install virtualbox`
-* `brew cask install vagrant`
+* `brew install --cask virtualbox`
+* `brew install --cask vagrant`
 * `brew install ansible`
 
 If an action is required on your part, `brew` will let you know in its log
@@ -178,6 +178,10 @@ manifest to the control-plane Docker container:
 ./hack/generate-manifest.sh --kind | docker exec -i kind-control-plane dd of=/root/antrea.yml
 go test -v github.com/vmware-tanzu/antrea/test/e2e -provider=kind
 ```
+
+`generate-manifest.sh` supports generating the Antrea manifest with different
+Antrea configurations. Run `./hack/generate-manifest.sh --help` to see the
+supported config options.
 
 As part of code development, if you want to run the tests with local changes,
 then make the code changes on the local repo and

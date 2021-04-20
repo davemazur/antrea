@@ -2,7 +2,6 @@ require 'date'
 # register accepts the hashmap passed to "script_params"
 # it runs once at startup
 def register(params)
-    @interval = params["interval"]
     @@time_map = Hash.new
 end
 
@@ -19,6 +18,16 @@ def filter(event)
     if event.get("[ipfix][protocolIdentifier]") == 17
         event.remove("[ipfix][protocolIdentifier]")
         event.set("[ipfix][protocolIdentifier]", "UDP")
+    end
+    if event.get("[ipfix][destinationIPv6Address]").nil?
+        event.set("[ipfix][destinationIP]", event.get("[ipfix][destinationIPv4Address]"))
+    else
+        event.set("[ipfix][destinationIP]", event.get("[ipfix][destinationIPv6Address]"))
+    end
+    if event.get("[ipfix][sourceIPv6Address]").nil?
+        event.set("[ipfix][sourceIP]", event.get("[ipfix][sourceIPv4Address]"))
+    else
+        event.set("[ipfix][sourceIP]", event.get("[ipfix][sourceIPv6Address]"))
     end
     if event.get("[ipfix][sourcePodName]") != ""
         if event.get("[ipfix][destinationServicePortName]") != ""
@@ -51,7 +60,7 @@ def filter(event)
             flowkey << ":"
             flowkey << event.get("[ipfix][sourceTransportPort]").to_s
             flowkey << "->"
-            flowkey << event.get("[ipfix][destinationIPv4Address]")
+            flowkey << event.get("[ipfix][destinationIP]")
             flowkey << ":"
             flowkey << event.get("[ipfix][destinationTransportPort]").to_s
             flowkey << " "
@@ -83,9 +92,12 @@ def filter(event)
         event.set("[ipfix][reverseThroughput]", event.get("[ipfix][reverseOctetDeltaCountFromSourceNode]").to_i / duration.to_i)
         @@time_map[key] = t
      else
-        @@time_map[key] = DateTime.strptime(event.get("[ipfix][flowEndSeconds]").to_s, '%Y-%m-%dT%H:%M:%S').to_time.to_i
-        event.set("[ipfix][throughput]", event.get("[ipfix][octetDeltaCountFromSourceNode]").to_i / @interval.to_i)
-        event.set("[ipfix][reverseThroughput]", event.get("[ipfix][reverseOctetDeltaCountFromSourceNode]").to_i / @interval.to_i)
+        startTime = DateTime.strptime(event.get("[ipfix][flowStartSeconds]").to_s, '%Y-%m-%dT%H:%M:%S').to_time.to_i
+        endTime = DateTime.strptime(event.get("[ipfix][flowEndSeconds]").to_s, '%Y-%m-%dT%H:%M:%S').to_time.to_i
+        duration = endTime-startTime
+        event.set("[ipfix][throughput]", event.get("[ipfix][octetDeltaCountFromSourceNode]").to_i / duration.to_i)
+        event.set("[ipfix][reverseThroughput]", event.get("[ipfix][reverseOctetDeltaCountFromSourceNode]").to_i / duration.to_i)
+        @@time_map[key] = endTime
      end
     return [event]
 end

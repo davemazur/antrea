@@ -20,7 +20,7 @@ function echoerr {
     >&2 echo "$@"
 }
 
-_usage="Usage: $0 [--mode (dev|release)] [--encap-mode] [--kind] [--ipsec] [--no-proxy] [--np] [--k8s-1.15] [--keep] [--tun (geneve|vxlan|gre|stt)] [--verbose-log] [--help|-h]
+_usage="Usage: $0 [--mode (dev|release)] [--encap-mode] [--kind] [--ipsec] [--no-proxy] [--no-np] [--k8s-1.15] [--keep] [--tun (geneve|vxlan|gre|stt)] [--verbose-log] [--help|-h]
 Generate a YAML manifest for Antrea using Kustomize and print it to stdout.
         --mode (dev|release)          Choose the configuration variant that you need (default is 'dev')
         --encap-mode                  Traffic encapsulation mode. (default is 'encap')
@@ -29,8 +29,9 @@ Generate a YAML manifest for Antrea using Kustomize and print it to stdout.
         --ipsec                       Generate a manifest with IPSec encryption of tunnel traffic enabled
         --all-features                Generate a manifest with all alpha features enabled
         --no-proxy                    Generate a manifest with Antrea proxy disabled
+        --no-legacy-crd               Generate a manifest without legacy CRD mirroring support enabled
         --endpointslice               Generate a manifest with EndpointSlice support enabled
-        --np                          Generate a manifest with ClusterNetworkPolicy and Antrea NetworkPolicy features enabled
+        --no-np                       Generate a manifest with Antrea-native policies disabled
         --k8s-1.15                    Generates a manifest which supports Kubernetes 1.15.
         --keep                        Debug flag which will preserve the generated kustomization.yml
         --tun (geneve|vxlan|gre|stt)  Choose encap tunnel type from geneve, gre, stt and vxlan (default is geneve)
@@ -41,9 +42,12 @@ Generate a YAML manifest for Antrea using Kustomize and print it to stdout.
         --coverage                    Generates a manifest which supports measuring code coverage of Antrea binaries.
         --simulator                   Generates a manifest with antrea-agent simulator included
         --custom-adm-controller       Generates a manifest with custom Antrea admission controller to validate/mutate resources.
+        --hw-offload                  Generates a manifest with hw-offload enabled in the antrea-ovs container.
         --help, -h                    Print this message and exit
 
 In 'release' mode, environment variables IMG_NAME and IMG_TAG must be set.
+
+In 'dev' mode, environment variable IMG_NAME can be set to use a custom image.
 
 This tool uses kustomize (https://github.com/kubernetes-sigs/kustomize) to generate manifests for
 Antrea. You can set the KUSTOMIZE environment variable to the path of the kustomize binary you want
@@ -64,8 +68,9 @@ KIND=false
 IPSEC=false
 ALLFEATURES=false
 PROXY=true
+LEGACY_CRD=true
 ENDPOINTSLICE=false
-NP=false
+NP=true
 KEEP=false
 ENCAP_MODE=""
 CLOUD=""
@@ -76,6 +81,7 @@ COVERAGE=false
 K8S_115=false
 SIMULATOR=false
 CUSTOM_ADM_CONTROLLER=false
+HW_OFFLOAD=false
 
 while [[ $# -gt 0 ]]
 do
@@ -110,13 +116,17 @@ case $key in
     PROXY=false
     shift
     ;;
+    --no-legacy-crd)
+    LEGACY_CRD=false
+    shift
+    ;;
     --endpointslice)
     PROXY=true
     ENDPOINTSLICE=true
     shift
     ;;
-    --np)
-    NP=true
+    --no-np)
+    NP=false
     shift
     ;;
     --k8s-1.15)
@@ -149,6 +159,10 @@ case $key in
     ;;
     --custom-adm-controller)
     CUSTOM_ADM_CONTROLLER=true
+    shift
+    ;;
+    --hw-offload)
+    HW_OFFLOAD=true
     shift
     ;;
     -h|--help)
@@ -256,13 +270,17 @@ if ! $PROXY; then
     sed -i.bak -E "s/^[[:space:]]*#[[:space:]]*AntreaProxy[[:space:]]*:[[:space:]]*[a-z]+[[:space:]]*$/  AntreaProxy: false/" antrea-agent.conf
 fi
 
+if ! $LEGACY_CRD; then
+    sed -i.bak -E "s/^#legacyCRDMirroring[[:space:]]*:[[:space:]]*[a-z]+[[:space:]]*$/legacyCRDMirroring: false/" antrea-controller.conf
+fi
+
 if $ENDPOINTSLICE; then
     sed -i.bak -E "s/^[[:space:]]*#[[:space:]]*EndpointSlice[[:space:]]*:[[:space:]]*[a-z]+[[:space:]]*$/  EndpointSlice: true/" antrea-agent.conf
 fi
 
-if $NP; then
-    sed -i.bak -E "s/^[[:space:]]*#[[:space:]]*AntreaPolicy[[:space:]]*:[[:space:]]*[a-z]+[[:space:]]*$/  AntreaPolicy: true/" antrea-controller.conf
-    sed -i.bak -E "s/^[[:space:]]*#[[:space:]]*AntreaPolicy[[:space:]]*:[[:space:]]*[a-z]+[[:space:]]*$/  AntreaPolicy: true/" antrea-agent.conf
+if ! $NP; then
+    sed -i.bak -E "s/^[[:space:]]*#[[:space:]]*AntreaPolicy[[:space:]]*:[[:space:]]*[a-z]+[[:space:]]*$/  AntreaPolicy: false/" antrea-controller.conf
+    sed -i.bak -E "s/^[[:space:]]*#[[:space:]]*AntreaPolicy[[:space:]]*:[[:space:]]*[a-z]+[[:space:]]*$/  AntreaPolicy: false/" antrea-agent.conf
 fi
 
 if [[ $ENCAP_MODE != "" ]]; then
@@ -404,6 +422,16 @@ if $CUSTOM_ADM_CONTROLLER; then
     cd ..
 fi
 
+if $HW_OFFLOAD; then
+    mkdir hwoffload && cd hwoffload
+    cp ../../patches/hwoffload/hwOffload.yml .
+    touch kustomization.yml
+    $KUSTOMIZE edit add base $BASE
+    $KUSTOMIZE edit add patch --path hwOffload.yml
+    BASE=../hwoffload
+    cd ..
+fi
+
 mkdir $MODE && cd $MODE
 touch kustomization.yml
 $KUSTOMIZE edit add base $BASE
@@ -411,11 +439,16 @@ $KUSTOMIZE edit add base $BASE
 find ../../patches/$MODE -name \*.yml -exec cp {} . \;
 
 if [ "$MODE" == "dev" ]; then
-    if $COVERAGE; then
-        $KUSTOMIZE edit set image antrea=antrea/antrea-ubuntu-coverage:latest
-    else
-        $KUSTOMIZE edit set image antrea=projects.registry.vmware.com/antrea/antrea-ubuntu:latest
+    if [[ -z "$IMG_NAME" ]]; then
+        if $COVERAGE; then
+            IMG_NAME="antrea/antrea-ubuntu-coverage:latest"
+        else
+            IMG_NAME="projects.registry.vmware.com/antrea/antrea-ubuntu:latest"
+        fi
     fi
+
+    $KUSTOMIZE edit set image antrea=$IMG_NAME
+
     $KUSTOMIZE edit add patch --path agentImagePullPolicy.yml
     $KUSTOMIZE edit add patch --path controllerImagePullPolicy.yml
     if $VERBOSE_LOG; then

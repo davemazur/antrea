@@ -17,6 +17,7 @@ package networkpolicy
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -43,6 +44,8 @@ const (
 	// Default number of workers processing a rule change.
 	defaultWorkers = 4
 )
+
+var emptyWatch = watch.NewEmptyWatch()
 
 // Controller is responsible for watching Antrea AddressGroups, AppliedToGroups,
 // and NetworkPolicies, feeding them to ruleCache, getting dirty rules from
@@ -87,6 +90,7 @@ type Controller struct {
 	appliedToGroupWatcher *watcher
 	addressGroupWatcher   *watcher
 	fullSyncGroup         sync.WaitGroup
+	ifaceStore            interfacestore.InterfaceStore
 }
 
 // NewNetworkPolicyController returns a new *Controller.
@@ -310,6 +314,7 @@ func NewNetworkPolicyController(antreaClientGetter agent.AntreaClientProvider,
 		fullSyncWaitGroup: &c.fullSyncGroup,
 		fullSynced:        false,
 	}
+	c.ifaceStore = ifaceStore
 	return c, nil
 }
 
@@ -346,6 +351,14 @@ func (c *Controller) GetAppliedToGroups() []v1beta2.AppliedToGroup {
 }
 
 func (c *Controller) GetNetworkPolicyByRuleFlowID(ruleFlowID uint32) *v1beta2.NetworkPolicyReference {
+	rule := c.GetRuleByFlowID(ruleFlowID)
+	if rule == nil {
+		return nil
+	}
+	return rule.PolicyRef
+}
+
+func (c *Controller) GetRuleByFlowID(ruleFlowID uint32) *types.PolicyRule {
 	rule, exists, err := c.reconciler.GetRuleByFlowID(ruleFlowID)
 	if err != nil {
 		klog.Errorf("Error when getting network policy by rule flow ID: %v", err)
@@ -354,7 +367,7 @@ func (c *Controller) GetNetworkPolicyByRuleFlowID(ruleFlowID uint32) *v1beta2.Ne
 	if !exists {
 		return nil
 	}
-	return rule.PolicyRef
+	return rule
 }
 
 func (c *Controller) GetControllerConnectionStatus() bool {
@@ -463,9 +476,9 @@ func (c *Controller) syncRule(key string) error {
 		klog.V(4).Infof("Finished syncing rule %q. (%v)", key, time.Since(startTime))
 	}()
 
-	rule, exists, completed := c.ruleCache.GetCompletedRule(key)
-	if !exists {
-		klog.V(2).Infof("Rule %v had been deleted, removing its flows", key)
+	rule, effective, realizable := c.ruleCache.GetCompletedRule(key)
+	if !effective {
+		klog.V(2).Infof("Rule %v was not effective, removing its flows", key)
 		if err := c.reconciler.Forget(key); err != nil {
 			return err
 		}
@@ -476,10 +489,10 @@ func (c *Controller) syncRule(key string) error {
 		}
 		return nil
 	}
-	// If the rule is not complete, we can simply skip it as it will be marked as dirty
+	// If the rule is not realizable, we can simply skip it as it will be marked as dirty
 	// and queued again when we receive the missing group it missed.
-	if !completed {
-		klog.V(2).Infof("Rule %v was not complete, skipping", key)
+	if !realizable {
+		klog.V(2).Infof("Rule %v was not realizable, skipping", key)
 		return nil
 	}
 	if err := c.reconciler.Reconcile(rule); err != nil {
@@ -502,9 +515,13 @@ func (c *Controller) syncRules(keys []string) error {
 
 	var allRules []*CompletedRule
 	for _, key := range keys {
-		rule, exists, completed := c.ruleCache.GetCompletedRule(key)
-		if !exists || !completed {
-			klog.Errorf("Rule %s is not complete or does not exist in cache", key)
+		rule, effective, realizable := c.ruleCache.GetCompletedRule(key)
+		// It's normal that a rule is not effective on this Node but abnormal that it is not realizable after watchers
+		// complete full sync.
+		if !effective {
+			klog.Infof("Rule %s is not effective on this Node", key)
+		} else if !realizable {
+			klog.Errorf("Rule %s is effective but not realizable", key)
 		} else {
 			allRules = append(allRules, rule)
 		}
@@ -574,6 +591,12 @@ func (w *watcher) watch() {
 	watcher, err := w.watchFunc()
 	if err != nil {
 		klog.Warningf("Failed to start watch for %s: %v", w.objectType, err)
+		return
+	}
+	// Watch method doesn't return error but "emptyWatch" in case of some partial data errors,
+	// e.g. timeout error. Make sure that watcher is not empty and log warning otherwise.
+	if reflect.TypeOf(watcher) == reflect.TypeOf(emptyWatch) {
+		klog.Warningf("Failed to start watch for %s, please ensure antrea service is reachable for the agent", w.objectType)
 		return
 	}
 
